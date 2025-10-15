@@ -1,0 +1,6 @@
+# Example environment variables for local development
+# Copy this file to .dev.vars and fill in your actual values
+# NEVER commit .dev.vars to version control
+
+OPENAI_API_KEY=sk-...
+SIGNING_SECRET=your-long-random-secret-string-here
