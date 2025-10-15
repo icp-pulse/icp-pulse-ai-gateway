@@ -9,10 +9,12 @@ import { generateCacheKey, extractContent } from './utils';
 export class AICacheDurableObject implements DurableObject {
   private state: DurableObjectState;
   private env: Env;
+  private pendingRequests: Map<string, Promise<CachedEntry>>;
 
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
     this.env = env;
+    this.pendingRequests = new Map();
   }
 
   /**
@@ -87,9 +89,36 @@ export class AICacheDurableObject implements DurableObject {
       return { ...cached, cached: true };
     }
 
-    // Cache miss - need to generate new response
+    // Check if a request is already in flight for this cache key
+    const pending = this.pendingRequests.get(cacheKey);
+    if (pending) {
+      console.log(`Request already in flight for key: ${cacheKey}, waiting for result...`);
+      const result = await pending;
+      // Mark as cached since we're reusing an in-flight request
+      return { ...result, cached: true };
+    }
+
+    // No cache and no pending request - we need to generate a new response
     console.log(`Cache MISS for key: ${cacheKey}. Generating new response...`);
 
+    // Create a promise for this generation and store it
+    const generationPromise = this.generateAndCache(cacheKey, req);
+    this.pendingRequests.set(cacheKey, generationPromise);
+
+    try {
+      const result = await generationPromise;
+      return { ...result, cached: false };
+    } finally {
+      // Clean up the pending request tracker
+      this.pendingRequests.delete(cacheKey);
+    }
+  }
+
+  /**
+   * Generate new response and cache it
+   * Separated from getOrGenerateResponse for proper request coordination
+   */
+  private async generateAndCache(cacheKey: string, req: GatewayRequest): Promise<CachedEntry> {
     // Call OpenAI API
     const content = await this.callOpenAI(req);
 
@@ -108,7 +137,7 @@ export class AICacheDurableObject implements DurableObject {
     await this.state.storage.put(cacheKey, entry);
 
     console.log(`Cached new response for key: ${cacheKey}`);
-    return { ...entry, cached: false };
+    return entry;
   }
 
   /**
