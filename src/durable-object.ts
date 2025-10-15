@@ -93,9 +93,27 @@ export class AICacheDurableObject implements DurableObject {
     const pending = this.pendingRequests.get(cacheKey);
     if (pending) {
       console.log(`Request already in flight for key: ${cacheKey}, waiting for result...`);
-      const result = await pending;
-      // Mark as cached since we're reusing an in-flight request
-      return { ...result, cached: true };
+      try {
+        const result = await pending;
+        console.log(`Got result from in-flight request for key: ${cacheKey}`);
+
+        // Double-check cache in case the first request stored it
+        const nowCached = await this.state.storage.get<CachedEntry>(cacheKey);
+        if (nowCached) {
+          console.log(`Verified cache entry exists for key: ${cacheKey}`);
+          nowCached.last_accessed = Date.now();
+          nowCached.hit_count = (nowCached.hit_count || 0) + 1;
+          await this.state.storage.put(cacheKey, nowCached);
+          return { ...nowCached, cached: true };
+        }
+
+        // If not in cache, return the in-flight result
+        return { ...result, cached: true };
+      } catch (error) {
+        console.error(`In-flight request failed for key: ${cacheKey}, will retry:`, error);
+        // If the pending request failed, fall through to generate a new one
+        this.pendingRequests.delete(cacheKey);
+      }
     }
 
     // No cache and no pending request - we need to generate a new response
@@ -107,9 +125,13 @@ export class AICacheDurableObject implements DurableObject {
 
     try {
       const result = await generationPromise;
+      console.log(`Successfully generated and cached response for key: ${cacheKey}`);
       return { ...result, cached: false };
+    } catch (error) {
+      console.error(`Failed to generate response for key: ${cacheKey}:`, error);
+      throw error;
     } finally {
-      // Clean up the pending request tracker
+      // Always clean up the pending request tracker
       this.pendingRequests.delete(cacheKey);
     }
   }
